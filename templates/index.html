@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+
+<head>
+    <title>Grog Barrel</title>
+    <script src="client.js"></script>
+    <style>
+        .grogClient {}
+    </style>
+</head>
+
+<body>
+    <h1>Grog Barrel</h1>
+    <li id="grogBarrel">
+    </li>
+    <fieldset class="grogClient">
+        <legend>Message Manager</legend>
+        <textarea id="recvdMessages" disabled placeholder="..." style="width: 100%; height: 45vh;"></textarea>
+        <button onclick="document.getElementById('recvdMessages').value = ''">Clear</button>
+        <fieldset>
+            <legend>Status: <b id="connStatus">Disconnected</b></legend>
+            <button id="connBttn">Connect</button>
+            <button id="disconnBttn" disabled>Disconnect</button>
+        </fieldset>
+        <fieldset>
+            <legend>Message Constructor</legend>
+            <input type="number" id="playerOffset" min=0 max=65535 />
+            <select id="playerState">
+                <option value=0>Unknown</option>
+                <option value=1>Playing</option>
+                <option value=2>Paused</option>
+                <option value=3>Loading</option>
+            </select>
+            <button id="sendBttn" disabled>Send</button>
+            <button id="pollBttn" disabled>Poll</button>
+            <button id="stopPollBttn" disabled>Stop Poll</button>
+        </fieldset>
+    </fieldset>
+</body>
+
+</html>

@@ -46,7 +46,6 @@ function toBytes(number) {
  * @returns Number
  */
 function fromBytes(highByte, lowByte) {
-    console.log("high:", highByte, "low:", lowByte);
     return highByte * 256 + lowByte
 }
 
@@ -60,7 +59,6 @@ function connect(url) {
     let msgbox = document.getElementById("recvdMessages");
 
     socket.addEventListener("open", () => {
-        // TODO: publish name to server
         msgbox.value = "Opened Connection " + new Date();
         msgbox.value += "\n-------"
     });
@@ -72,7 +70,7 @@ function connect(url) {
 
         for (let i = 0; i < numConns; i++) {
             let msg = {
-                id: i,
+                id: recvd[4 * i + 3],
                 state: recvd[4 * i + 2],
                 offset: fromBytes(recvd[4 * i], recvd[4 * i + 1])
             }
@@ -85,7 +83,6 @@ function connect(url) {
         }
     });
     socket.addEventListener("close", () => {
-        // TODO: unpublish name from server
         msgbox.value += "\n-------\nClosed Connection " + new Date();
     });
 

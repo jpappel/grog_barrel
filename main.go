@@ -24,12 +24,41 @@ const (
 
 var tmpl *template.Template
 var logger *slog.Logger
-var rooms map[string]*sync.Map
+var rooms map[string]*Room
 
-// PERF: unused space in struct
+type Room struct {
+	name        string
+	connections sync.Map
+	ids         [256]string // max number of connections is 256
+	idsLock     sync.RWMutex
+}
+
 type inMsg struct {
 	offset      uint16      // current timestamp in file
 	playerState PlayerState // playerState
+	id          byte        // consistent id from client
+}
+
+func (r *Room) Register(addr string) byte {
+	r.idsLock.Lock()
+	defer r.idsLock.Unlock()
+
+	for i, v := range r.ids {
+		if v == "" {
+			r.ids[i] = addr
+			return byte(i)
+		}
+	}
+	return 0
+}
+
+func (r *Room) Free(id byte) {
+	r.idsLock.Lock()
+	defer r.idsLock.Unlock()
+
+	remoteAddr := r.ids[id]
+	r.connections.Delete(remoteAddr)
+	r.ids[id] = ""
 }
 
 func (m inMsg) String() string {
@@ -66,13 +95,23 @@ func barrel(w http.ResponseWriter, r *http.Request) {
 
 	room, ok := rooms[roomName]
 	if !ok {
-		rooms[roomName] = &sync.Map{}
+		rooms[roomName] = &Room{
+			name:        roomName,
+			connections: sync.Map{},
+			idsLock:     sync.RWMutex{},
+		}
 		room = rooms[roomName]
 	}
 
 	remoteAddr := c.RemoteAddr().String()
-	defer room.Delete(remoteAddr)
-	logger.Info("Opened web socket connection", slog.String("roomName", roomName), slog.String("remote", remoteAddr))
+	id := room.Register(remoteAddr)
+	defer room.Free(id)
+
+	logger.Info("Opened websocket connection",
+		slog.String("roomName", roomName),
+		slog.String("remote", remoteAddr),
+		slog.Int("id", int(id)),
+	)
 
 	for {
 		// TODO: check message type for errors
@@ -85,27 +124,36 @@ func barrel(w http.ResponseWriter, r *http.Request) {
 		msg := inMsg{
 			offset:      binary.BigEndian.Uint16(message[:2]),
 			playerState: PlayerState(message[2]),
+			id:          id,
 		}
 
-		logger.Debug("recieved message", slog.String("msg", msg.String()))
-		room.Store(remoteAddr, msg)
+		logger.Debug("recieved message",
+			slog.String("roomName", roomName),
+			slog.String("remote", remoteAddr),
+			slog.Int("id", int(id)),
+			slog.String("content", msg.String()),
+		)
+		room.connections.Store(remoteAddr, msg)
 
 		buf := make([]byte, 0)
-		room.Range(func(k, v any) bool {
+		room.connections.Range(func(k, v any) bool {
 			msg := v.(inMsg)
 			buf = binary.BigEndian.AppendUint16(buf, msg.offset)
 			buf = append(buf, byte(msg.playerState))
-			// buf = append(buf, []byte(remoteAddr)...)
-			buf = append(buf, byte(0)) // NOTE: null byte delimits clients
+			buf = append(buf, msg.id)
 			return true
 		})
 
-		if c.WriteMessage(2, buf) != nil {
+		if err := c.WriteMessage(2, buf); err != nil {
 			logger.Error("Error while writting", slog.Any("error", err))
 			break
 		}
 	}
-	logger.Info("Closing web socket connection", slog.String("remote", remoteAddr))
+	logger.Info("Closing web socket connection",
+		slog.String("roomName", roomName),
+		slog.String("remote", remoteAddr),
+		slog.Int("id", int(id)),
+	)
 }
 
 func main() {
@@ -138,7 +186,7 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", *hostname, *port)
 
-	rooms = make(map[string]*sync.Map)
+	rooms = make(map[string]*Room)
 
 	// parse templtes
 	var err error
@@ -153,7 +201,8 @@ func main() {
 	mux.HandleFunc("/client.js", script)
 	mux.HandleFunc("/", home)
 
-	logger.Info("Starting server", slog.String("bindAddress", addr))
+	logger.Info("Starting server",
+		slog.String("bindAddress", addr))
 
 	logger.Info(http.ListenAndServe(addr, mux).Error())
 }

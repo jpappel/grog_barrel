@@ -1,10 +1,11 @@
-SRC := $(wildcard $(wildcard */*.go)) $(wildcard *.go)
+SRC := $(wildcard cmd/*) $(wildcard pkg/*/*.go)
+BIN := grogbarrel
 
 .PHONY: all
-all: grogbarrel
+all: $(BIN)
 
-grogbarrel: $(SRC)
-	go build .
+$(BIN): $(SRC)
+	go build -o $@ ./cmd/grog_barrel.go
 
 .PHONY: test
 test:
@@ -12,11 +13,13 @@ test:
 
 .PHONY: clean
 clean:
+	rm $(BIN)
 	go mod tidy
 
 .PHONY: info
 info:
 	@echo SRC: $(SRC)
+	@echo BIN: $(BIN)
 
 .PHONY: help
 help:

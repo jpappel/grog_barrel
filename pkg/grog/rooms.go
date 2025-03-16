@@ -1,13 +1,13 @@
 package grog
 
 import (
-	"encoding/binary"
 	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jpappel/grog_barrel/pkg/util"
 )
 
@@ -22,11 +22,21 @@ type Client struct {
 	Version util.SemVer
 }
 
+type Messages struct {
+	// TODO: implement rwlock
+	// NOTE: consider using a double buffer to avoid lock contention
+	status           []byte
+	announcements    []byte
+	PreparedStatus   *websocket.PreparedMessage
+	PreparedAnnounce *websocket.PreparedMessage
+	statusLock       sync.RWMutex
+	announcementLock sync.RWMutex
+}
+
 type Room struct {
 	Name        string
 	Connections atomic.Int32
-	// TODO: convert into list of drivers
-	Driver      WebSocketDriver
+	Messages    Messages
 	Open        bool
 	statuses    sync.Map
 	wg          sync.WaitGroup
@@ -39,11 +49,29 @@ type Room struct {
 	logger       *slog.Logger
 }
 
+func (m *Messages) Status() []byte {
+	// FIXME: idk if this actually protects the slice for reading
+	m.statusLock.RLock()
+	defer m.statusLock.RUnlock()
+	return m.status
+}
+
+func (m *Messages) Announcements() []byte {
+	m.announcementLock.RLock()
+	defer m.announcementLock.RUnlock()
+	return m.announcements
+}
+
 func NewRoom(name string, logger *slog.Logger) *Room {
 	r := new(Room)
 
 	r.Name = name
 	r.logger = logger
+
+	r.Messages.status = make([]byte, 0, 1024)
+	r.Messages.announcements = make([]byte, 0, 1024)
+	r.Messages.status[0] = byte(STATUS_MSG)
+	r.Messages.announcements[0] = byte(ANNOUNCE_MSG)
 
 	// PERF: profile channel size
 	r.usersChange = make(chan bool, 5)
@@ -65,7 +93,8 @@ func (r *Room) Join(client Client) (byte, error) {
 
 		r.ids.vals[i] = client
 
-		if conns == 1 {
+		if conns == 1 && !r.Open {
+			r.Open = true
 			go r.run()
 		}
 		r.usersChange <- true
@@ -91,30 +120,34 @@ func (r *Room) Leave(id byte) {
 		r.logger.Error("Invalid numer of connections",
 			slog.String("roomName", r.Name), slog.Int("connections", int(conns)))
 		panic("Negative Number of connections")
+	} else if conns == 0 {
+		r.Open = false
 	}
 
 	r.usersChange <- true
 }
 
-func (r *Room) Update(addr string, msg StatusMessage) {
+func (r *Room) Update(addr string, msg ClientStatusMessage) {
 	r.statuses.Store(addr, msg)
 }
 
 // Build the status message continuously until room.done
-func (r *Room) buildStatus(buf *[]byte) error {
+func (r *Room) buildStatus() error {
+	r.Messages.statusLock.Lock()
 	r.statuses.Range(func(k, v any) bool {
-		msg := v.(StatusMessage)
-		*buf = binary.BigEndian.AppendUint16(*buf, msg.Offset)
-		*buf = append(*buf, byte(msg.PlayerState))
-		*buf = append(*buf, msg.Id)
+		msg := v.(ClientStatusMessage)
+		r.Messages.status = msg.WriteBytes(r.Messages.status)
 		return true
 	})
+	r.Messages.statusLock.Unlock()
 
-	if err := r.Driver.WriteStatus(*buf); err != nil {
+	var err error
+	r.Messages.PreparedStatus, err = websocket.NewPreparedMessage(2, r.Messages.status)
+	if err != nil {
 		r.logger.Error("Failed to prepare status message",
 			slog.String("roomName", r.Name),
 			slog.String("err", err.Error()),
-			slog.Int("msgLen", len(*buf)),
+			slog.Int("msgLen", len(r.Messages.status)),
 		)
 		return err
 	}
@@ -127,24 +160,27 @@ func (r *Room) Check(lastAnnounce int) (int, bool) {
 	return max(r.lastAnnounce, lastAnnounce), r.lastAnnounce > lastAnnounce
 }
 
-func (r *Room) buildAnnounce(buf *[]byte) error {
-	r.ids.RLock()
-	defer r.ids.RUnlock()
-
+func (r *Room) buildAnnounce() error {
 	// NOTE: this only works when MAX_CONNECTIONS <= 255
-	*buf = append(*buf, byte(r.Connections.Load()))
+	r.Messages.announcements = append(r.Messages.announcements, byte(r.Connections.Load()))
 
-	for i, client := range r.ids.vals {
+	r.ids.RLock()
+	r.Messages.announcementLock.Lock()
+	for id, client := range r.ids.vals {
 		if client.Addr == "" {
 			continue
 		}
 
-		*buf = append(*buf, byte(i))
-		*buf = append(*buf, byte(len(client.Name)))
-		*buf = append(*buf, client.Name...)
+		r.Messages.announcements = append(r.Messages.announcements, byte(id))
+		r.Messages.announcements = append(r.Messages.announcements, byte(len(client.Name)))
+		r.Messages.announcements = append(r.Messages.announcements, client.Name...)
 	}
+	r.ids.RUnlock()
+	r.Messages.announcementLock.Unlock()
 
-	if err := r.Driver.WriteAnnounce(*buf); err != nil {
+	var err error
+	r.Messages.PreparedAnnounce, err = websocket.NewPreparedMessage(2, r.Messages.announcements)
+	if err != nil {
 		r.logger.Error("Failed to prepare announce message",
 			slog.String("roomName", r.Name))
 		return err
@@ -154,20 +190,17 @@ func (r *Room) buildAnnounce(buf *[]byte) error {
 }
 
 func (r *Room) runStatus(done <-chan struct{}, d time.Duration) {
-	buf := make([]byte, 0, 1024)
-	buf = append(buf, byte(STATUS_MSG))
 
 	ticker := time.NewTicker(d)
 	defer ticker.Stop()
 
 	for {
-		buf = buf[:1]
+		r.Messages.status = r.Messages.status[:1]
 		select {
 		case <-done:
 			break
 		case <-ticker.C:
-			if err := r.buildStatus(&buf); err != nil {
-				// TODO: propagate error
+			if err := r.buildStatus(); err != nil {
 				panic(err)
 			}
 		}
@@ -175,16 +208,13 @@ func (r *Room) runStatus(done <-chan struct{}, d time.Duration) {
 }
 
 func (r *Room) runAnnounce(done <-chan struct{}, usersChange <-chan bool) {
-	buf := make([]byte, 0, 1024)
-	buf = append(buf, byte(ANNOUNCE_MSG))
 	for {
-		buf = buf[:1]
+		r.Messages.announcements = r.Messages.announcements[:1]
 		select {
 		case <-done:
 			break
 		case <-usersChange:
-			if err := r.buildAnnounce(&buf); err != nil {
-				// TODO: propagate error
+			if err := r.buildAnnounce(); err != nil {
 				panic(err)
 			}
 			r.lastAnnounce += 1

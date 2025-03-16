@@ -1,6 +1,7 @@
 package grog
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/jpappel/grog_barrel/pkg/util"
@@ -22,18 +23,30 @@ const (
 	STATUS_MSG
 )
 
-type StatusMessage struct {
+type ClientStatusMessage struct {
 	Offset      uint16      // current timestamp in file
 	PlayerState PlayerState // playerState
 	Id          byte        // consistent id from client
 }
 
-type AnnounceMessage struct {
+type ClientAnnounceMessage struct {
 	Version util.SemVer
 	Name    string
 }
 
-func (m StatusMessage) String() string {
+type ServerStatusMessage struct {
+	Statuses []ClientStatusMessage
+}
+
+type ServerAnnounceMessage struct {
+	Connections byte
+	Clients     []struct {
+		Id   byte
+		Name string
+	}
+}
+
+func (m ClientStatusMessage) String() string {
 	status := ""
 	if m.PlayerState == UNKNOWN_STATUS {
 		status = "UNKNOWN"
@@ -47,6 +60,31 @@ func (m StatusMessage) String() string {
 	return fmt.Sprintf("%s %d", status, m.Offset)
 }
 
-func (m AnnounceMessage) String() string {
+// Append the correct transport encoding of a client status message to a slice
+func (m ClientStatusMessage) WriteBytes(p []byte) []byte {
+	p = binary.BigEndian.AppendUint16(p, m.Offset)
+	p = append(p, byte(m.PlayerState))
+	p = append(p, m.Id)
+	return p
+}
+
+func (m ClientAnnounceMessage) String() string {
 	return fmt.Sprintf("%s (%s)", m.Name, m.Version.String())
+}
+
+func (m ServerStatusMessage) WriteBytes(p []byte) []byte {
+	for _, status := range m.Statuses {
+		p = status.WriteBytes(p)
+	}
+	return p
+}
+
+func (m ServerAnnounceMessage) WriteBytes(p []byte) []byte {
+	p = append(p, m.Connections)
+	for _, client := range m.Clients {
+		p = append(p, client.Id)
+		p = append(p, byte(len(client.Name)))
+		p = append(p, client.Name...)
+	}
+	return p
 }

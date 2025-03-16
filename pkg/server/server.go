@@ -1,12 +1,10 @@
 package server
 
 import (
-	"encoding/binary"
 	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/jpappel/grog_barrel/pkg/grog"
@@ -28,15 +26,6 @@ func script(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "client.js")
 }
 
-func writeError(c *websocket.Conn, msg string) error {
-	buf := make([]byte, 0, 1+len(msg))
-	buf = append(buf, byte(3))
-	buf = append(buf, msg...)
-
-	deadline := time.Now().Add(1 * time.Second)
-	return c.WriteControl(websocket.CloseMessage, buf, deadline)
-}
-
 func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := upgrader.Upgrade(w, r, nil)
@@ -46,12 +35,14 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 		}
 		defer c.Close()
 
-		client, err := parseClient(c, logger)
-		if err == ErrIncompatibleVersion || err == ErrInvalidName {
-			writeError(c, err.Error())
+		driver := WsDriver{c, logger}
+
+		client, err := driver.ParseClient()
+		if err == ErrIncompatibleVersion || err == ErrInvalidClientName {
+			driver.WriteError(err.Error())
 			return
 		} else if err != nil {
-			writeError(c, "Internal Server Error")
+			driver.WriteError("Internal Server Error")
 			return
 		}
 
@@ -60,7 +51,7 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 			slog.String("name", client.Name),
 			slog.String("addr", client.Addr),
 		)
-		logger.Debug("Version Negotiated", clientInfo)
+		logger = logger.With(clientInfo)
 
 		roomName := r.PathValue("roomName")
 
@@ -73,15 +64,14 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 		id, err := room.Join(client)
 		if err == grog.ErrRoomFull {
 			logger.Debug("Room is full")
-			writeError(c, "Room is full")
+			driver.WriteError("Room is full")
 			return
 		} else if err != nil {
 			logger.Error("Unexpected error occured while joining",
 				slog.String("roomName", roomName),
-				clientInfo,
 				slog.String("err", err.Error()),
 			)
-			writeError(c, "Internal Server Error")
+			driver.WriteError("Internal Server Error")
 			return
 		}
 		defer room.Leave(id)
@@ -90,7 +80,8 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 			slog.String("roomName", roomName),
 			slog.Int("clientRoomId", int(id)),
 		)
-		logger.Info("User Joined Room", roomInfo, clientInfo)
+		logger = logger.With(roomInfo)
+		logger.Info("User Joined Room")
 
 		lastAnnouncement := 0
 		updates := false
@@ -98,11 +89,9 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 		for {
 			lastAnnouncement, updates = room.Check(lastAnnouncement)
 			if updates {
-				if err := c.WritePreparedMessage(room.Driver.Announcements); err != nil {
+				if err := c.WritePreparedMessage(room.Messages.PreparedAnnounce); err != nil {
 					logger.Error("Error while writting announcement",
 						slog.String("error", err.Error()),
-						roomInfo,
-						clientInfo,
 					)
 					break
 				}
@@ -117,36 +106,26 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 			} else if err != nil {
 				logger.Error("Error while reading message",
 					slog.Any("error", err),
-					roomInfo,
-					clientInfo,
 				)
 				break
 			}
 
-			msg := grog.StatusMessage{
-				Offset:      binary.BigEndian.Uint16(message[:2]),
-				PlayerState: grog.PlayerState(message[2]),
-				Id:          id,
-			}
+			msg := parseStatusMessage(message, id)
 
 			logger.Debug("recieved message",
-				roomInfo,
-				clientInfo,
 				slog.String("content", msg.String()),
 			)
 			room.Update(client.Addr, msg)
 
-			if err := c.WritePreparedMessage(room.Driver.Status); err != nil {
+			if err := c.WritePreparedMessage(room.Messages.PreparedStatus); err != nil {
 				logger.Error("Error while writting",
 					slog.String("error", err.Error()),
-					roomInfo,
-					clientInfo,
 				)
-				writeError(c, "Internal Server Error")
+				driver.WriteError("Internal Server Error")
 				break
 			}
 		}
-		logger.Info("Closing web socket connection", roomInfo, clientInfo)
+		logger.Info("Closing web socket connection")
 	}
 }
 

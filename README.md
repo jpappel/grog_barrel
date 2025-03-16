@@ -18,7 +18,7 @@ A synchronization tool for browser based video playback
 ### Unix Socket based ideas
 
 1. Server Opens Welcome Unix Socket
-    * `/tmp/grogbarrel/new_connections.sock`
+    * `/tmp/grogbarrel/join.sock`
 2. Client connects to socket, sends clientAnnounce
 3. Server reads clientAnnounce responds with path to new socket or error, then closes the connection
     * `/tmp/grogbarrel/clientX.sock`

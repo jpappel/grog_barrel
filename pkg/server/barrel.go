@@ -22,6 +22,7 @@ func parseClient(message []byte, addr string, logger *slog.Logger) (grog.Client,
 	client := grog.Client{Addr: addr}
 
 	client.Version = util.SemVer{Major: message[0], Minor: message[1], Patch: message[2]}
+    logger.Debug("clientversion", slog.String("clientVersion", client.Version.String()))
 	if !ServerVersion.Compatible(client.Version) {
 		logger.Info("Incompatible client version",
 			slog.String("remote", client.Addr),

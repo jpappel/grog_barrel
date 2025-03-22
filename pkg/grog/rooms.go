@@ -2,6 +2,7 @@ package grog
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -23,8 +24,10 @@ type Client struct {
 }
 
 type Messages struct {
-	// TODO: implement rwlock
-	// NOTE: consider using a double buffer to avoid lock contention
+	/* NOTE: consider using a double buffer to avoid lock contention
+	   could possible be implemented as a bool to swap between
+	   the two buffers.
+	*/
 	status           []byte
 	announcements    []byte
 	PreparedStatus   *websocket.PreparedMessage
@@ -49,6 +52,10 @@ type Room struct {
 	logger       *slog.Logger
 }
 
+func (c Client) String() string {
+	return fmt.Sprintf("%s @ %s : %s", c.Name, c.Addr, c.Version.String())
+}
+
 func (m *Messages) Status() []byte {
 	// FIXME: idk if this actually protects the slice for reading
 	m.statusLock.RLock()
@@ -68,8 +75,8 @@ func NewRoom(name string, logger *slog.Logger) *Room {
 	r.Name = name
 	r.logger = logger
 
-	r.Messages.status = make([]byte, 0, 1024)
-	r.Messages.announcements = make([]byte, 0, 1024)
+	r.Messages.status = make([]byte, 1, 1024)
+	r.Messages.announcements = make([]byte, 1, 1024)
 	r.Messages.status[0] = byte(STATUS_MSG)
 	r.Messages.announcements[0] = byte(ANNOUNCE_MSG)
 
@@ -98,8 +105,10 @@ func (r *Room) Join(client Client) (byte, error) {
 			go r.run()
 		}
 		r.usersChange <- true
+		r.logger.Debug("User Joined")
 		return byte(i), nil
 	}
+	r.logger.Warn("Room Full")
 	return 0, ErrRoomFull
 }
 
@@ -127,13 +136,15 @@ func (r *Room) Leave(id byte) {
 	r.usersChange <- true
 }
 
-func (r *Room) Update(addr string, msg ClientStatusMessage) {
-	r.statuses.Store(addr, msg)
+func (r *Room) Update(client Client, msg ClientStatusMessage) {
+	r.statuses.Store(client.Addr, msg)
 }
 
 // Build the status message continuously until room.done
 func (r *Room) buildStatus() error {
 	r.Messages.statusLock.Lock()
+	r.Messages.status = r.Messages.status[:1]
+
 	r.statuses.Range(func(k, v any) bool {
 		msg := v.(ClientStatusMessage)
 		r.Messages.status = msg.WriteBytes(r.Messages.status)
@@ -157,15 +168,20 @@ func (r *Room) buildStatus() error {
 
 // Check for new Announcements
 func (r *Room) Check(lastAnnounce int) (int, bool) {
+	r.Messages.announcementLock.RLock()
+	defer r.Messages.announcementLock.RUnlock()
 	return max(r.lastAnnounce, lastAnnounce), r.lastAnnounce > lastAnnounce
 }
 
 func (r *Room) buildAnnounce() error {
-	// NOTE: this only works when MAX_CONNECTIONS <= 255
-	r.Messages.announcements = append(r.Messages.announcements, byte(r.Connections.Load()))
-
 	r.ids.RLock()
 	r.Messages.announcementLock.Lock()
+	r.Messages.announcements = r.Messages.announcements[:1]
+
+	// NOTE: this only works when MAX_CONNECTIONS <= 255
+	r.Messages.announcements = append(r.Messages.announcements, byte(r.Connections.Load()))
+	// r.Messages.announcements = append(r.Messages.announcements, 0)
+
 	for id, client := range r.ids.vals {
 		if client.Addr == "" {
 			continue
@@ -176,6 +192,7 @@ func (r *Room) buildAnnounce() error {
 		r.Messages.announcements = append(r.Messages.announcements, client.Name...)
 	}
 	r.ids.RUnlock()
+	// r.Messages.announcements[0] = byte(connections)
 	r.Messages.announcementLock.Unlock()
 
 	var err error
@@ -195,7 +212,6 @@ func (r *Room) runStatus(done <-chan struct{}, d time.Duration) {
 	defer ticker.Stop()
 
 	for {
-		r.Messages.status = r.Messages.status[:1]
 		select {
 		case <-done:
 			break
@@ -209,7 +225,6 @@ func (r *Room) runStatus(done <-chan struct{}, d time.Duration) {
 
 func (r *Room) runAnnounce(done <-chan struct{}, usersChange <-chan bool) {
 	for {
-		r.Messages.announcements = r.Messages.announcements[:1]
 		select {
 		case <-done:
 			break

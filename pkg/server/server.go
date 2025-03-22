@@ -46,7 +46,7 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 			return
 		}
 
-		clientInfo := slog.Group("clientInfo",
+		clientInfo := slog.Group("client",
 			slog.String("version", client.Version.String()),
 			slog.String("name", client.Name),
 			slog.String("addr", client.Addr),
@@ -115,7 +115,7 @@ func barrel(logger *slog.Logger) func(http.ResponseWriter, *http.Request) {
 			logger.Debug("recieved message",
 				slog.String("content", msg.String()),
 			)
-			room.Update(client.Addr, msg)
+			room.Update(client, msg)
 
 			if err := c.WritePreparedMessage(room.Messages.PreparedStatus); err != nil {
 				logger.Error("Error while writting",

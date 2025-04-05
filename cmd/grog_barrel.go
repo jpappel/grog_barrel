@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -53,9 +55,9 @@ func main() {
 
 	if *socksrv {
 		pid := os.Getpid()
-		if _, err := os.Stat(*sockBaseDir); os.IsExist(err) {
+		if _, err := os.Stat(*sockBaseDir); errors.Is(err, fs.ErrNotExist) {
 			err := os.Mkdir(*sockBaseDir, 0755)
-			if err != nil && !os.IsExist(err) {
+			if err != nil && errors.Is(err, fs.ErrExist) {
 				logger.Error("Error occured while creating base dir")
 				panic(err)
 			}
@@ -68,7 +70,7 @@ func main() {
 		} else if err != nil {
 			panic(err)
 		} else {
-			if _, err = os.Stat(fmt.Sprint("/proc/", pid)); os.IsExist(err) {
+			if _, err = os.Stat(fmt.Sprint("/proc/", pid)); errors.Is(err, fs.ErrExist) {
 				panic(fmt.Sprint("A grogbarrel server is already running with pid:", pid))
 			}
 		}

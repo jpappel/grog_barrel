@@ -33,7 +33,8 @@ A synchronization tool for browser based video playback
     * 0x00-0x02: major, minor, patch bytes
     * 0x03-0xXX: utf-8 encoded name (max length 255)
 * serverAnnounce
-    * 0x00: number of clients
+    * 0x00: 0x01
+    * 0x01: number of clients
     * client list
         * 0x00: client id
         * 0x01: name length
@@ -42,6 +43,8 @@ A synchronization tool for browser based video playback
     * 0x00-0x01: Big endian client time
     * 0x02: client state
 * serverStatus
+    * 0x00: 0x02
+    * 0x01: number of statuses
     * status list
         * 0x00-0x01: Big endian client time
         * 0x02: client state

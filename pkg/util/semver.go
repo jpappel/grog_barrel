@@ -8,7 +8,7 @@ type SemVer struct {
 	Patch byte
 }
 
-var ServerVersion = SemVer{Major: 0, Minor: 5, Patch: 0}
+var ServerVersion = SemVer{Major: 1, Minor: 5, Patch: 0}
 
 func (s SemVer) String() string {
 	return fmt.Sprintf("v%d.%d.%d", s.Major, s.Minor, s.Patch)

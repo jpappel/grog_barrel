@@ -75,7 +75,7 @@ func NewRoom(name string, logger *slog.Logger) *Room {
 	r.Name = name
 	r.logger = logger
 
-	r.Messages.status = make([]byte, 1, 1024)
+	r.Messages.status = make([]byte, 2, 1024)
 	r.Messages.announcements = make([]byte, 1, 1024)
 	r.Messages.status[0] = byte(STATUS_MSG)
 	r.Messages.announcements[0] = byte(ANNOUNCE_MSG)
@@ -143,16 +143,21 @@ func (r *Room) Update(client Client, msg ClientStatusMessage) {
 // Build the status message continuously until room.done
 func (r *Room) buildStatus() error {
 	r.Messages.statusLock.Lock()
-	r.Messages.status = r.Messages.status[:1]
+	r.Messages.status = r.Messages.status[:2]
 
+	count := 0
 	r.statuses.Range(func(k, v any) bool {
 		msg := v.(ClientStatusMessage)
 		r.Messages.status = msg.WriteBytes(r.Messages.status)
+		count++
 		return true
 	})
 	r.Messages.statusLock.Unlock()
+	r.Messages.status[1] = byte(count)
 
 	var err error
+	r.Messages.statusLock.RLock()
+	defer r.Messages.statusLock.RUnlock()
 	r.Messages.PreparedStatus, err = websocket.NewPreparedMessage(2, r.Messages.status)
 	if err != nil {
 		r.logger.Error("Failed to prepare status message",

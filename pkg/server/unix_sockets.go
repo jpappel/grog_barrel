@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -32,10 +33,15 @@ type SockServer struct {
 
 func (d UnixDriver) WriteError(msg string) error {
 	buf := make([]byte, 0, 1+len(msg))
-	buf = append(buf, byte(3))
+	buf = append(buf, byte(grog.ERROR_MSG))
 	buf = append(buf, msg...)
 
 	_, err := d.conn.Write(buf)
+	return err
+}
+
+func (d UnixDriver) WriteEmpty() error {
+	_, err := d.conn.Write([]byte{byte(grog.EMPTY_MSG)})
 	return err
 }
 
@@ -53,6 +59,7 @@ func (d UnixDriver) ParseClient() (grog.Client, error) {
 
 	clientAddr := d.conn.LocalAddr().String()
 	client, err := parseClient(buf, clientAddr, d.logger)
+
 	return client, err
 }
 
@@ -75,7 +82,7 @@ func (d UnixDriver) ParseRoom() (*grog.Room, error) {
 	}
 
 	// NOTE: file mode could be a potential security concern
-	if err := os.Mkdir(d.baseDir+"/"+name, 0775); err != nil && !os.IsExist(err) {
+	if err := os.Mkdir(d.baseDir+"/"+name, 0775); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, err
 	}
 
@@ -94,7 +101,10 @@ func handleNewConn(d UnixDriver, clientRooms chan<- ClientRoom, more chan<- bool
 	if err == io.EOF {
 		d.WriteError("Unexpected end of message")
 		return
-	} else if os.IsTimeout(err) {
+	} else if err == ErrIncompatibleVersion || err == ErrInvalidClientName {
+		d.WriteError("Invalid client: " + err.Error())
+		return
+	} else if errors.Is(err, os.ErrDeadlineExceeded) {
 		d.WriteError("Took too long to send clientAnnounce")
 		d.logger.Info("Timed out while waiting for clientAnnounce")
 		return
@@ -106,12 +116,15 @@ func handleNewConn(d UnixDriver, clientRooms chan<- ClientRoom, more chan<- bool
 	}
 	d.logger.Debug("Parsed Client", slog.String("client", client.String()))
 
+	d.conn.SetDeadline(time.Now().Add(350 * time.Millisecond))
+	d.WriteEmpty()
+
 	d.conn.SetDeadline(time.Now().Add(50 * time.Second))
 	room, err := d.ParseRoom()
 	if err == io.EOF {
 		d.WriteError("Unexpected end of message")
 		return
-	} else if os.IsTimeout(err) {
+	} else if errors.Is(err, os.ErrDeadlineExceeded) {
 		d.WriteError("Took too long to send room name")
 		d.logger.Info("Timed out while waiting for room name")
 		return
@@ -181,7 +194,7 @@ func handleClientConn(ctx context.Context, client grog.Client, room *grog.Room, 
 	ln.SetDeadline(time.Now().Add(1 * time.Minute))
 
 	conn, err := ln.AcceptUnix()
-	if os.IsTimeout(err) {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
 		logger.Warn("Timed out while waiting for client connection")
 		return
 	} else if err != nil {
@@ -213,7 +226,7 @@ func handleClientConn(ctx context.Context, client grog.Client, room *grog.Room, 
 	for range 5 {
 		lastAnnouncement, updates = room.Check(lastAnnouncement)
 		if updates {
-            // FIXME: bufer has length of 1 instead of correct amount
+			// FIXME: bufer has length of 1 instead of correct amount
 			announcement := room.Messages.Announcements()
 			logger.Debug("Sending first serverAnnounce", slog.Int("len", len(announcement)))
 			if _, err := conn.Write(announcement); err != nil {
@@ -271,8 +284,11 @@ func handleClientConn(ctx context.Context, client grog.Client, room *grog.Room, 
 		status := room.Messages.Status()
 		logger.Debug("status", slog.Int("len", len(status)))
 		conn.SetDeadline(time.Now().Add(100 * time.Millisecond))
-		if _, err := conn.Write(status); err != nil {
+		// FIXME: double check for short writes
+		if n, err := conn.Write(status); err != nil {
 			break
+		} else if n != len(status) {
+			logger.Warn("short write!")
 		}
 
 		// buf = buf[:1]

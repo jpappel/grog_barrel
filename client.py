@@ -10,7 +10,7 @@ from time import sleep
 import datetime as dt
 from typing import Iterable, TypedDict
 
-VERSION = {"Major": 0, "Minor": 5, "Patch": 0}
+VERSION = {"Major": 1, "Minor": 5, "Patch": 0}
 VERSION_STRING = "v" + ".".join(
     map(str, [VERSION["Major"], VERSION["Minor"], VERSION["Patch"]])
 )
@@ -58,6 +58,19 @@ def negotiate(client_name: str, room_name: str, join_sock_path: Path) -> Path:
             + client_name.encode()
         )
         sleep(0.25)
+        msg = s.recv(512)
+        try:
+            MessageType(msg[0])
+            if len(msg) != 1:
+                raise ValueError()
+        except ValueError:
+            print(
+                "Failed to negotiate client with server:",
+                msg[1:].decode(),
+                file=sys.stderr,
+            )
+            exit(1)
+
         s.sendall(room_name.encode())
         sleep(0.1)
 
@@ -135,9 +148,12 @@ def connect(
                 case MessageType.STATUS:
                     state["last_info"] = "recieved serverStatus"
 
-                    offset = 1
-                    n = recieved - offset
-                    for i in range(n // 4):
+                    offset = 2
+                    if recieved - offset < buf[2]:
+                        print("short read", file=sys.stderr)
+                    n = (recieved - offset) // 4
+                    print("n:", n, file=sys.stderr)
+                    for i in range(n):
                         start = 4 * i + offset
                         client_time = int.from_bytes(buf[start : start + 2])
                         try:
@@ -160,9 +176,12 @@ def connect(
                 case MessageType.ERROR:
                     state["last_info"] = "recieved error"
                     state["error"] = buf[1:recieved].decode()
+                case MessageType.EMPTY:
+                    state["last_info"] = "recieved empty message"
+
             yield state
             sleep(sleep_duration)
-            state["last_info"] = "sending clientStatus"
+            # state["last_info"] = "sending clientStatus"
             s.sendall(status_to_bytes(*status))
 
 

@@ -15,7 +15,7 @@ type WsDriver struct {
 
 func (d WsDriver) WriteError(msg string) error {
 	buf := make([]byte, 0, 1+len(msg))
-	buf = append(buf, byte(3))
+	buf = append(buf, byte(grog.ERROR_MSG))
 	buf = append(buf, msg...)
 
 	deadline := time.Now().Add(1 * time.Second)

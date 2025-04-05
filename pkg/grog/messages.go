@@ -21,6 +21,7 @@ const (
 	EMPTY_MSG MessageType = iota
 	ANNOUNCE_MSG
 	STATUS_MSG
+    ERROR_MSG
 )
 
 type ClientStatusMessage struct {
